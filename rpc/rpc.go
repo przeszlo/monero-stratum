@@ -10,13 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"crypto/md5"
-	"crypto/rand"
-	"encoding/hex"
-	"io"
-	"strings"
 
 	"github.com/sammy007/monero-stratum/pool"
+    dac "github.com/xinsnake/go-http-digest-auth-client"
 )
 
 type RPCClient struct {
@@ -80,68 +76,17 @@ func (r *RPCClient) SubmitBlock(hash string) (*JSONRpcResp, error) {
 	return r.doPost(r.Url.String(), "submitblock", []string{hash})
 }
 
-func digestParts(resp *http.Response) map[string]string {
-	result := map[string]string{}
-	if len(resp.Header["Www-Authenticate"]) > 0 {
-		wantedHeaders := []string{"nonce", "realm", "qop"}
-		responseHeaders := strings.Split(resp.Header["Www-Authenticate"][0], ",")
-		for _, r := range responseHeaders {
-			for _, w := range wantedHeaders {
-				if strings.Contains(r, w) {
-					result[w] = strings.Split(r, `"`)[1]
-				}
-			}
-		}
-	}
-	return result
-}
-
-func getMD5(text string) string {
-	hasher := md5.New()
-	hasher.Write([]byte(text))
-	return hex.EncodeToString(hasher.Sum(nil))
-}
-
-func getCnonce() string {
-	b := make([]byte, 8)
-	io.ReadFull(rand.Reader, b)
-	return fmt.Sprintf("%x", b)[:16]
-}
-
-func getDigestAuthrization(digestParts map[string]string) string {
-	d := digestParts
-	ha1 := getMD5(d["username"] + ":" + d["realm"] + ":" + d["password"])
-	ha2 := getMD5(d["method"] + ":" + d["uri"])
-	nonceCount := 00000001
-	cnonce := getCnonce()
-	response := getMD5(fmt.Sprintf("%s:%s:%v:%s:%s:%s", ha1, d["nonce"], nonceCount, cnonce, d["qop"], ha2))
-	authorization := fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", cnonce="%s", nc="%v", qop="%s", response="%s"`,
-		d["username"], d["realm"], d["nonce"], d["uri"], cnonce, nonceCount, d["qop"], response)
-	return authorization
-}
-
 func (r *RPCClient) doPost(url, method string, params interface{}) (*JSONRpcResp, error) {
 	jsonReq := map[string]interface{}{"jsonrpc": "2.0", "id": 0, "method": method, "params": params}
 	data, _ := json.Marshal(jsonReq)
-
-	req1, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
-	req1.Header.Set("Content-Length", (string)(len(data)))
-	req1.Header.Set("Content-Type", "application/json")
-	resp1, err := r.client.Do(req1)
-	defer resp1.Body.Close()
-
-	digestParts := digestParts(resp1)
-	digestParts["uri"] = url
-	digestParts["method"] = "POST"
-	digestParts["username"] = r.login
-	digestParts["password"] = r.password
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
 	req.Header.Set("Content-Length", (string)(len(data)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", getDigestAuthrization(digestParts))
+	t := dac.NewTransport(r.login, r.password)
 
-	resp, err := r.client.Do(req)
+	resp, err := t.RoundTrip(req)
+
 	if err != nil {
 		r.markSick()
 		return nil, err
