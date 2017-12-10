@@ -50,7 +50,7 @@ func NewRPCClient(cfg *pool.Upstream) (*RPCClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	rpcClient := &RPCClient{Name: cfg.Name, Url: url}
+	rpcClient := &RPCClient{Name: cfg.Name, Url: url, login: cfg.Login, password: cfg.Password}
 	timeout, _ := time.ParseDuration(cfg.Timeout)
 	rpcClient.client = &http.Client{
 		Timeout: timeout,

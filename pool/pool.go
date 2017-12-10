@@ -35,6 +35,8 @@ type Upstream struct {
 	Name    string `json:"name"`
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
+	Login    string `json:"login"`
+	Password    string `json:"password"`
 	Timeout string `json:"timeout"`
 }
 
