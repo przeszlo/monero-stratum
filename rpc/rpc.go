@@ -10,9 +10,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"io"
+	"io/ioutil"
+	"crypto/md5"
+	"crypto/rand"
+	"encoding/hex"
+	"strings"
+	"encoding/base64"
+	"strconv"
 
 	"github.com/sammy007/monero-stratum/pool"
-    dac "github.com/xinsnake/go-http-digest-auth-client"
 )
 
 type RPCClient struct {
@@ -76,16 +83,96 @@ func (r *RPCClient) SubmitBlock(hash string) (*JSONRpcResp, error) {
 	return r.doPost(r.Url.String(), "submitblock", []string{hash})
 }
 
+/*
+ Parse Authorization header from the http.Request. Returns a map of
+ auth parameters or nil if the header is not a valid parsable Digest
+ auth header.
+*/
+func DigestAuthParams(r *http.Response) map[string]string {
+	s := strings.SplitN(r.Header.Get("Www-Authenticate"), " ", 2)
+	if len(s) != 2 || s[0] != "Digest" {
+		return nil
+	}
+
+	result := map[string]string{}
+	for _, kv := range strings.Split(s[1], ",") {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		result[strings.Trim(parts[0], "\" ")] = strings.Trim(parts[1], "\" ")
+	}
+	return result
+}
+func RandomKey() string {
+	k := make([]byte, 45)
+	for bytes := 0; bytes < len(k); {
+		n, err := rand.Read(k[bytes:])
+		if err != nil {
+			panic("rand.Read() failed")
+		}
+		bytes += n
+	}
+	return base64.StdEncoding.EncodeToString(k)
+}
+
+/*
+ H function for MD5 algorithm (returns a lower-case hex MD5 digest)
+*/
+func H(data string) string {
+	digest := md5.New()
+	digest.Write([]byte(data))
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func getAuthHeader(username, password string, resp *http.Response) (string) {
+	var authorization map[string]string = DigestAuthParams(resp)
+	realmHeader := authorization["realm"]
+	qopHeader := authorization["qop"]
+	nonceHeader := authorization["nonce"]
+	//opaqueHeader := authorization["opaque"]
+	algorithm := authorization["algorithm"]
+	realm := realmHeader
+	// A1
+	h := md5.New()
+	A1 := fmt.Sprintf("%s:%s:%s", username, realm, password)
+	io.WriteString(h, A1)
+	HA1 := hex.EncodeToString(h.Sum(nil))
+
+	// A2
+	h = md5.New()
+	A2 := fmt.Sprintf("POST:%s", "/json_rpc")
+	io.WriteString(h, A2)
+	HA2 := hex.EncodeToString(h.Sum(nil))
+	nc := "00000001"
+	// response
+	cnonce := RandomKey()
+	response := H(strings.Join([]string{HA1, nonceHeader, nc, cnonce, qopHeader, HA2}, ":"))
+
+	// now make header
+	AuthHeader := fmt.Sprintf(`Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s", qop=%s, nc=%s, cnonce="%s", algorithm="%s"`,
+		username, realmHeader, nonceHeader, "/json_rpc", response, qopHeader, nc, cnonce, algorithm)
+	return AuthHeader
+}
+
 func (r *RPCClient) doPost(url, method string, params interface{}) (*JSONRpcResp, error) {
 	jsonReq := map[string]interface{}{"jsonrpc": "2.0", "id": 0, "method": method, "params": params}
 	data, _ := json.Marshal(jsonReq)
+	req1, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	req1.Header.Set("Content-Length", strconv.Itoa(len(data)))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Accept", "application/json")
+	resp1, err := r.client.Do(req1)
+	io.Copy(ioutil.Discard, resp1.Body)
+	resp1.Body.Close()
+	authHeader := getAuthHeader(r.login, r.password, resp1)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
-	req.Header.Set("Content-Length", (string)(len(data)))
+	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	t := dac.NewTransport(r.login, r.password)
 
-	resp, err := t.RoundTrip(req)
+	req.Header.Set("Authorization", authHeader)
+	resp, err := r.client.Do(req)
 
 	if err != nil {
 		r.markSick()
