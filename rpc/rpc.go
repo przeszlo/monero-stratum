@@ -163,6 +163,10 @@ func (r *RPCClient) doPost(url, method string, params interface{}) (*JSONRpcResp
 	req1.Header.Set("Content-Type", "application/json")
 	req1.Header.Set("Accept", "application/json")
 	resp1, err := r.client.Do(req1)
+	if err != nil {
+		r.markSick()
+		return nil, err
+	}
 	io.Copy(ioutil.Discard, resp1.Body)
 	resp1.Body.Close()
 	authHeader := getAuthHeader(r.login, r.password, resp1)
